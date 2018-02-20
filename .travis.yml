@@ -2,15 +2,60 @@ language: ruby
 branches:
   only:
   - master
-rvm:
-- 1.8.7
-- 1.9.3
-- 2.0.0
-- 2.1
-- 2.2
-- jruby
-- rbx-2
-env:
-  global:
-  - secure: kD+PX8ZNg+AAzyr6WYs1vp9teAkzMfEoYkIMI0hrRN0ml9ccJVsJR1pIGpaIwyCa5PmFtCZ1Xi2vFb4XzTTeaZoHHS/ll9LwuQH6mwvdgj3n6TmNRdq3b/oGRHBX4Z0HMobqaftuzY/V8iTpVk92jwIY8NPj00k055b2jrKqhdw=
-  - secure: Eai99h4K7s9/Sh3CHClWs3IQNaEUdVagpmA/A8m0rysGBAYJdMKbUOp9DZPAmCnT+06l0aFv87+CRYtgyX05pE5f21nqBOU46eKS38cLif3aPTwFmwokf28WLDgmZKa/zJp767SiQ/dp0hz+LJrkJvkDRnA1un36f7wiyY9xnYs=
+matrix:
+  include:
+  - rvm: 1.8.7
+    env: RAILS_VERSION=3.2.0
+  - rvm: 1.9.3
+    env: RAILS_VERSION=3.2.0
+  - rvm: 1.9.3
+    env: RAILS_VERSION=4.2
+  - rvm: 2.2.9
+    env: RAILS_VERSION=3.2.0
+  - rvm: 2.2.9
+    env: RAILS_VERSION=4.2
+  - rvm: 2.2.9
+    env: RAILS_VERSION=5.1
+  - rvm: 2.3.6
+    env: RAILS_VERSION=3.2.0
+  - rvm: 2.3.6
+    env: RAILS_VERSION=4.2
+  - rvm: 2.3.6
+    env: RAILS_VERSION=5.1
+  - rvm: 2.4.3
+    env: RAILS_VERSION=4.2
+  - rvm: 2.4.3
+    env: RAILS_VERSION=5.1 SEQUEL_VERSION=4.0
+  - rvm: 2.4.3
+    env: RAILS_VERSION=5.1 SEQUEL_VERSION=5.0
+  - rvm: 2.5.0
+    env: RAILS_VERSION=4.2
+  - rvm: 2.5.0
+    env: RAILS_VERSION=5.1 SEQUEL_VERSION=4.0
+  - rvm: 2.5.0
+    env: RAILS_VERSION=5.1 SEQUEL_VERSION=5.0
+  # - rvm: jruby-9.1.2.0
+  #   env: RAILS_VERSION=3.2.0
+  # - rvm: jruby-9.1.2.0
+  #   env: RAILS_VERSION=4.2
+  # - rvm: jruby-9.1.2.0
+  #   env: RAILS_VERSION=5.0
+  # - rvm: rbx-2
+  #   env: RAILS_VERSION=3.2.0
+  # - rvm: rbx-2
+  #   env: RAILS_VERSION=4.2
+  # - rvm: rbx-3.20
+  #   env: RAILS_VERSION=3.2.0
+  # - rvm: rbx-3.20
+  #   env: RAILS_VERSION=4.2
+  # - rvm: rbx-3.20
+  #   env: RAILS_VERSION=5.0
+  allow_failures:
+  - rvm: rbx-2
+before_install:
+  - wget http://api-key-dealer.herokuapp.com/clients/algolia-keys && chmod +x algolia-keys
+  - gem install bundler
+  - bundle --version
+install: rm -f Gemfile.lock && bundle install --without development
+cache: bundler
+script: eval $(./algolia-keys export) && bundle exec rake

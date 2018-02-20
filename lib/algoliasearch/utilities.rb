@@ -2,7 +2,8 @@ module AlgoliaSearch
   module Utilities
     class << self
       def get_model_classes
-        AlgoliaSearch.included_in ? AlgoliaSearch.included_in : []
+        Rails.application.eager_load! if Rails.application # Ensure all models are loaded (not necessary in production when cache_classes is true).
+        AlgoliaSearch.instance_variable_get :@included_in
       end
 
       def clear_all_indexes
@@ -12,8 +13,16 @@ module AlgoliaSearch
       end
 
       def reindex_all_models
-        get_model_classes.each do |klass|
-          klass.reindex
+        klasses = get_model_classes
+
+        puts ''
+        puts "Reindexing #{klasses.count} models: #{klasses.to_sentence}."
+        puts ''
+
+        klasses.each do |klass|
+          puts klass
+          puts "Reindexing #{klass.count} records..."
+          klass.algolia_reindex
         end
       end
     end

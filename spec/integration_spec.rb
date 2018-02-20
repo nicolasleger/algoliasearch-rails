@@ -1,6 +1,12 @@
 require File.expand_path(File.join(File.dirname(__FILE__), 'spec_helper'))
 
+OLD_RAILS = Gem.loaded_specs['rails'].version < Gem::Version.new('4.0')
+
 require 'active_record'
+unless OLD_RAILS
+  require 'active_job/test_helper'
+  ActiveJob::Base.queue_adapter = :test
+end
 require 'sqlite3' if !defined?(JRUBY_VERSION)
 require 'logger'
 require 'sequel'
@@ -16,6 +22,10 @@ ActiveRecord::Base.establish_connection(
     'pool' => 5,
     'timeout' => 5000
 )
+
+if ActiveRecord::Base.respond_to?(:raise_in_transactional_callbacks)
+  ActiveRecord::Base.raise_in_transactional_callbacks = true
+end
 
 SEQUEL_DB = Sequel.connect(defined?(JRUBY_VERSION) ? 'jdbc:sqlite:sequel_data.sqlite3' : { 'adapter' => 'sqlite', 'database' => 'sequel_data.sqlite3' })
 
@@ -49,6 +59,8 @@ ActiveRecord::Schema.define do
   create_table :uniq_users, :id => false do |t|
     t.string :name
   end
+  create_table :nullable_ids do |t|
+  end
   create_table :nested_items do |t|
     t.integer :parent_id
     t.boolean :hidden
@@ -58,6 +70,8 @@ ActiveRecord::Schema.define do
     t.string :country
     t.float :lat
     t.float :lng
+  end
+  create_table :with_slaves do |t|
   end
   create_table :mongo_objects do |t|
     t.string :name
@@ -78,6 +92,26 @@ ActiveRecord::Schema.define do
     t.string :name
   end
   create_table :encoded_strings do |t|
+  end
+  create_table :forward_to_replicas do |t|
+    t.string :name
+  end
+  create_table :forward_to_replicas_twos do |t|
+    t.string :name
+  end
+  create_table :sub_replicas do |t|
+    t.string :name
+  end
+  unless OLD_RAILS
+    create_table :enqueued_objects do |t|
+      t.string :name
+    end
+    create_table :disabled_enqueued_objects do |t|
+      t.string :name
+    end
+  end
+  create_table :misconfigured_blocks do |t|
+    t.string :name
   end
 end
 
@@ -117,7 +151,7 @@ class Color < ActiveRecord::Base
 
   algoliasearch :synchronous => true, :index_name => safe_index_name("Color"), :per_environment => true do
     attributesToIndex [:name]
-    attributesForFaceting [:short_name]
+    attributesForFaceting ['searchable(short_name)']
     customRanking ["asc(hex)"]
     tags do
       name # single tag
@@ -181,6 +215,21 @@ class UniqUser < ActiveRecord::Base
   end
 end
 
+class NullableId < ActiveRecord::Base
+  include AlgoliaSearch
+
+  algoliasearch :synchronous => true, :index_name => safe_index_name("NullableId"), :per_environment => true, :id => :custom_id, :if => :never do
+  end
+
+  def custom_id
+    nil
+  end
+
+  def never
+    false
+  end
+end
+
 class NestedItem < ActiveRecord::Base
   has_many :children, :class_name => "NestedItem", :foreign_key => "parent_id"
 
@@ -195,24 +244,46 @@ class NestedItem < ActiveRecord::Base
   end
 end
 
+# create this index before the class actually loads, to ensure the customRanking is updated
+index = Algolia::Index.new(safe_index_name('City_replica2'))
+index.wait_task index.set_settings({'customRanking' => ['desc(d)']})['taskID']
+
 class City < ActiveRecord::Base
   include AlgoliaSearch
 
   algoliasearch :synchronous => true, :index_name => safe_index_name("City"), :per_environment => true do
     geoloc :lat, :lng
+    add_attribute :a_null_lat, :a_lng
+    customRanking ['desc(b)']
 
-    add_slave safe_index_name('City_slave1'), :per_environment => true do
+    add_replica safe_index_name('City_replica1'), :per_environment => true do
       attributesToIndex [:country]
+      customRanking ['asc(a)']
     end
+
+    add_replica safe_index_name('City_replica2'), :per_environment => true do
+      customRanking ['asc(a)', 'desc(c)']
+    end
+  end
+
+  def a_null_lat
+    nil
+  end
+
+  def a_lng
+    1.2345678
   end
 end
 
-class SequelBook < Sequel::Model
+class SequelBook < Sequel::Model(SEQUEL_DB)
   plugin :active_model
 
   include AlgoliaSearch
 
   algoliasearch :synchronous => true, :index_name => safe_index_name("SequelBook"), :per_environment => true, :sanitize => true do
+    add_attribute :test
+    add_attribute :test2
+
     attributesToIndex [:name]
   end
 
@@ -220,12 +291,19 @@ class SequelBook < Sequel::Model
     SequelBook.new
   end
 
+  def test
+    'test'
+  end
+
+  def test2
+    'test2'
+  end
+
   private
   def public?
     released && !premium
   end
 end
-SequelBook.db = SEQUEL_DB
 
 describe 'SequelBook' do
   before(:all) do
@@ -236,7 +314,7 @@ describe 'SequelBook' do
     @steve_jobs = SequelBook.create :name => 'Steve Jobs', :author => 'Walter Isaacson', :premium => true, :released => true
     results = SequelBook.search('steve')
     expect(results.size).to eq(1)
-    results.should include(@steve_jobs)
+    expect(results[0].id).to eq(@steve_jobs.id)
   end
 
   it "should not override after hooks" do
@@ -295,6 +373,72 @@ class EncodedString < ActiveRecord::Base
   end
 end
 
+class SubReplicas < ActiveRecord::Base
+  include AlgoliaSearch
+
+  algoliasearch :synchronous => true, :force_utf8_encoding => true, :index_name => safe_index_name("SubReplicas") do
+    attributesToIndex [:name]
+    customRanking ["asc(name)"]
+
+    add_index safe_index_name("Additional_Index"), :per_environment => true do
+      attributesToIndex [:name]
+      customRanking ["asc(name)"]
+
+      add_replica safe_index_name("Replica_Index"), :per_environment => true do
+        attributesToIndex [:name]
+        customRanking ["desc(name)"]
+      end
+    end
+  end
+end
+
+class WithSlave < ActiveRecord::Base
+  include AlgoliaSearch
+
+  algoliasearch :force_utf8_encoding => true, :index_name => safe_index_name("With slave") do
+    add_slave safe_index_name("WithSlave_slave") do
+    end
+  end
+
+  # Ensure the index is indeed using slaves
+  algolia_index.set_settings({:slaves => [safe_index_name("WithSlave_slave")]})
+end
+
+unless OLD_RAILS
+  class EnqueuedObject < ActiveRecord::Base
+    include AlgoliaSearch
+
+    include GlobalID::Identification
+
+    def id
+      read_attribute(:id)
+    end
+
+    def self.find(id)
+      EnqueuedObject.first
+    end
+
+    algoliasearch :enqueue => Proc.new { |record| raise "enqueued #{record.id}" },
+      :index_name => safe_index_name('EnqueuedObject') do
+      attributes [:name]
+    end
+  end
+
+  class DisabledEnqueuedObject < ActiveRecord::Base
+    include AlgoliaSearch
+
+    algoliasearch(:enqueue => Proc.new { |record| raise "enqueued" },
+      :index_name => safe_index_name('EnqueuedObject'),
+      :disable_indexing => true) do
+      attributes [:name]
+    end
+  end
+end
+
+class MisconfiguredBlock < ActiveRecord::Base
+  include AlgoliaSearch
+end
+
 describe 'Encoding' do
   before(:all) do
     EncodedString.clear_index!(true)
@@ -309,6 +453,26 @@ describe 'Encoding' do
     end
   end
 
+end
+
+# Rails 3.2 swallows exception in after_commit
+unless OLD_RAILS
+  describe 'Too big records' do
+    before(:all) do
+      Color.clear_index!(true)
+    end
+
+    after(:all) do
+      Color.delete_all
+    end
+
+    it "Throw an exception if the data is too big" do
+      expect {
+        Color.create! :name => 'big' * 100000
+      }.to raise_error(Algolia::AlgoliaProtocolError)
+    end
+
+  end
 end
 
 describe 'Settings' do
@@ -480,10 +644,24 @@ describe 'Colors' do
   end
 
   it "should not index non-saved object" do
-    expect { Color.new(:name => 'purple').index! }.to raise_error(ArgumentError)
-    expect { Color.new(:name => 'purple').remove_from_index! }.to raise_error(ArgumentError)
+    expect { Color.new(:name => 'purple').index!(true) }.to raise_error(ArgumentError)
+    expect { Color.new(:name => 'purple').remove_from_index!(true) }.to raise_error(ArgumentError)
   end
 
+  it "should reindex with a temporary index name based on custom index name & per_environment" do
+    Color.reindex
+  end
+
+  it "should search inside facets" do
+    @blue = Color.create!(:name => "blue", :short_name => "blu", :hex => 0x0000FF)
+    @black = Color.create!(:name => "black", :short_name => "bla", :hex => 0x000000)
+    @green = Color.create!(:name => "green", :short_name => "gre", :hex => 0x00FF00)
+    facets = Color.search_for_facet_values('short_name', 'bl', :query => 'black')
+    expect(facets.size).to eq(1)
+    expect(facets.first['value']).to eq('bla')
+    expect(facets.first['highlighted']).to eq('<em>bl</em>a')
+    expect(facets.first['count']).to eq(1)
+  end
 end
 
 describe 'An imaginary store' do
@@ -528,6 +706,7 @@ describe 'An imaginary store' do
     @products_in_database = Product.all
 
     Product.reindex(1000, true)
+    sleep 5
   end
 
   it "should not be synchronous" do
@@ -683,49 +862,223 @@ describe 'Cities' do
     results.should include(sf)
   end
 
-  it "should be searchable using slave index" do
-    r = City.index(safe_index_name('City_slave1')).search 'no land'
+  it "should be searchable using replica index" do
+    r = City.index(safe_index_name('City_replica1')).search 'no land'
     r['nbHits'].should eq(1)
   end
 
-  it "should be searchable using slave index 2" do
-    r = City.raw_search 'no land', :index => safe_index_name('City_slave1')
+  it "should be searchable using replica index 2" do
+    r = City.raw_search 'no land', :index => safe_index_name('City_replica1')
     r['nbHits'].should eq(1)
   end
 
-  it "should be searchable using slave index 3" do
-    r = City.raw_search 'no land', :slave => safe_index_name('City_slave1')
+  it "should be searchable using replica index 3" do
+    r = City.raw_search 'no land', :replica => safe_index_name('City_replica1')
     r['nbHits'].should eq(1)
   end
 
-  it "should be searchable using slave index 4" do
-    r = City.search 'no land', :index => safe_index_name('City_slave1')
+  it "should be searchable using replica index 4" do
+    r = City.search 'no land', :index => safe_index_name('City_replica1')
     r.size.should eq(1)
   end
 
-  it "should be searchable using slave index 5" do
-    r = City.search 'no land', :slave => safe_index_name('City_slave1')
+  it "should be searchable using replica index 5" do
+    r = City.search 'no land', :replica => safe_index_name('City_replica1')
     r.size.should eq(1)
+  end
+
+  it "should reindex with replicas in place" do
+    City.reindex!(1000, true)
+    expect(City.index.get_settings['replicas'].length).to eq(2)
+  end
+
+  it "should reindex with replicas using a temporary index" do
+    City.reindex(1000, true)
+    expect(City.index.get_settings['replicas'].length).to eq(2)
+  end
+
+  it "should not include the replicas setting on replicas" do
+    City.send(:algolia_configurations).to_a.each do |v|
+      if v[0][:replica]
+        expect(v[1].to_settings[:replicas]).to be_nil
+      else
+        expect(v[1].to_settings[:replicas]).to match_array(["#{safe_index_name('City_replica1')}_#{Rails.env}", "#{safe_index_name('City_replica2')}_#{Rails.env}"])
+      end
+    end
+  end
+
+  it "should browse" do
+    total = City.index.search('')['nbHits']
+    n = 0
+    City.index.browse do |hit|
+      n += 1
+    end
+    expect(n).to eq(total)
+  end
+
+  it "should have set the custom ranking on all indices" do
+    expect(City.index.get_settings['customRanking']).to eq(['desc(b)'])
+    expect(City.index(safe_index_name('City_replica1')).get_settings['customRanking']).to eq(['asc(a)'])
+    expect(City.index(safe_index_name('City_replica2')).get_settings['customRanking']).to eq(['asc(a)', 'desc(c)'])
+  end
+
+end
+
+describe "FowardToReplicas" do
+  before(:each) do
+    Object.send(:remove_const, :ForwardToReplicas) if Object.constants.include?(:ForwardToReplicas)
+
+    class ForwardToReplicas < ActiveRecord::Base
+      include AlgoliaSearch
+
+      algoliasearch :synchronous => true, :index_name => safe_index_name('ForwardToReplicas') do
+        attribute :name
+        attributesToIndex %w(first_value)
+        attributesToHighlight %w(primary_highlight)
+
+        add_replica safe_index_name('ForwardToReplicas_replica') do
+          attributesToHighlight %w(replica_highlight)
+        end
+      end
+    end
+  end
+
+  after(:each) do
+    ForwardToReplicas.index.delete!
+  end
+
+  it 'shouldn\'t have inherited from the primary' do
+    ForwardToReplicas.send :algolia_ensure_init
+
+    # Hacky way to have a wait on set_settings
+    ForwardToReplicas.create(:name => 'val')
+    ForwardToReplicas.reindex!
+
+    primary_settings = ForwardToReplicas.index.get_settings
+    expect(primary_settings['attributesToIndex']).to eq(%w(first_value))
+    expect(primary_settings['attributesToHighlight']).to eq(%w(primary_highlight))
+
+    replica_settings = ForwardToReplicas.index(safe_index_name('ForwardToReplicas_replica')).get_settings
+    expect(replica_settings['attributesToIndex']).to eq(nil)
+    expect(replica_settings['attributesToHighlight']).to eq(%w(replica_highlight))
+  end
+
+  it 'should update the replica settings when changed' do
+    Object.send(:remove_const, :ForwardToReplicasTwo) if Object.constants.include?(:ForwardToReplicasTwo)
+
+    class ForwardToReplicasTwo < ActiveRecord::Base
+      include AlgoliaSearch
+
+      algoliasearch :synchronous => true, :index_name => safe_index_name('ForwardToReplicas') do
+        attribute :name
+        attributesToIndex %w(second_value)
+        attributesToHighlight %w(primary_highlight)
+
+        add_replica safe_index_name('ForwardToReplicas_replica'), :inherit => true do
+          attributesToHighlight %w(replica_highlight)
+        end
+      end
+    end
+
+    ForwardToReplicas.send :algolia_ensure_init
+
+    ForwardToReplicasTwo.send :algolia_ensure_init
+
+    # Hacky way to have a wait on set_settings
+    ForwardToReplicasTwo.create(:name => 'val')
+    ForwardToReplicasTwo.reindex!
+
+    primary_settings = ForwardToReplicas.index.get_settings
+    expect(primary_settings['attributesToIndex']).to eq(%w(second_value))
+    expect(primary_settings['attributesToHighlight']).to eq(%w(primary_highlight))
+
+    replica_settings = ForwardToReplicas.index(safe_index_name('ForwardToReplicas_replica')).get_settings
+    expect(replica_settings['attributesToIndex']).to eq(%w(second_value))
+    expect(replica_settings['attributesToHighlight']).to eq(%w(replica_highlight))
+
+    expect(ForwardToReplicas.index.name).to eq(ForwardToReplicasTwo.index.name)
+  end
+end
+
+describe "SubReplicas" do
+  before(:all) do
+    SubReplicas.clear_index!(true)
+  end
+
+  let(:expected_indicies) { %w(SubReplicas Additional_Index Replica_Index).map { |name| safe_index_name(name) } }
+
+  it "contains all levels in algolia_configurations" do
+    configured_indicies = SubReplicas.send(:algolia_configurations)
+    configured_indicies.each_pair do |opts, _|
+      expect(expected_indicies).to include(opts[:index_name])
+
+      expect(opts[:replica]).to be true if opts[:index_name] == safe_index_name('Replica_Index')
+    end
+  end
+
+  it "should be searchable through default index" do
+    expect { SubReplicas.raw_search('something') }.not_to raise_error
+  end
+
+  it "should be searchable through added index" do
+    expect { SubReplicas.raw_search('something', :index => safe_index_name('Additional_Index')) }.not_to raise_error
+  end
+
+  it "should be searchable through added indexes replica" do
+    expect { SubReplicas.raw_search('something', :index => safe_index_name('Replica_Index')) }.not_to raise_error
+  end
+end
+
+describe "WithSlave" do
+  before(:all) do
+    WithSlave.clear_index!(true)
+  end
+
+  let(:expected_indicies) { %w(WithSlave WithSlave_slave).map { |name| safe_index_name(name) } }
+
+  it "should be searchable through added indexes slaves" do
+    expect { WithSlave.raw_search('something', :index => safe_index_name('WithSlave_slave')) }.not_to raise_error
   end
 
   it "should reindex with slaves in place" do
-    City.reindex!(1000, true)
-    expect(City.index.get_settings['slaves'].length).to eq(1)
+    WithSlave.reindex!
+    expect(WithSlave.index.get_settings['slaves'].length).to eq(1)
   end
+end
 
-  it "should reindex with slaves using a temporary index" do
-    City.reindex(1000, true)
-    expect(City.index.get_settings['slaves'].length).to eq(1)
-  end
+describe "SlaveThenReplica" do
+  it 'should throw with add_slave then add_replica' do
+    test = lambda do
+      class SlaveThenReplica
+        include AlgoliaSearch
 
-  it "should not include the slaves setting on slaves" do
-    City.send(:algolia_configurations).to_a.each do |v|
-      if v[0][:slave]
-        expect(v[1].to_settings[:slaves]).to be_nil
-      else
-        expect(v[1].to_settings[:slaves]).to eq(["#{safe_index_name('City_slave1')}_#{Rails.env}"])
+        algoliasearch :synchronous => true, :force_utf8_encoding => true, :index_name => safe_index_name("SlaveThenReplica") do
+          add_slave safe_index_name("SlaveThenReplica_slave") do
+          end
+          add_replica safe_index_name("SlaveThenReplica_replica") do
+          end
+        end
       end
     end
+    expect(test).to raise_error(AlgoliaSearch::MixedSlavesAndReplicas)
+  end
+end
+
+describe "ReplicaThenSlave" do
+  it 'should throw with add_replice then add_slave' do
+    test = lambda do
+      class ReplicaThenSlave
+        include AlgoliaSearch
+
+        algoliasearch :synchronous => true, :force_utf8_encoding => true, :index_name => safe_index_name("ReplicaThenSlave") do
+          add_replica safe_index_name("ReplicaThenSlave_replica") do
+          end
+          add_slave safe_index_name("ReplicaThenSlave_slave") do
+          end
+        end
+      end
+    end
+    expect(test).to raise_error(AlgoliaSearch::MixedSlavesAndReplicas)
   end
 end
 
@@ -775,9 +1128,16 @@ describe 'Book' do
       expect(b['hits'][0]['_highlightResult']['name']['value']).to eq('"> <em>hack</em>0r')
     rescue
       # rails 4.2's sanitizer
-      expect(b['hits'][0]['name']).to eq('&quot;&gt; hack0r')
-      expect(b['hits'][0]['author']).to eq('')
-      expect(b['hits'][0]['_highlightResult']['name']['value']).to eq('&quot;&gt; <em>hack</em>0r')
+      begin
+        expect(b['hits'][0]['name']).to eq('&quot;&gt; hack0r')
+        expect(b['hits'][0]['author']).to eq('')
+        expect(b['hits'][0]['_highlightResult']['name']['value']).to eq('&quot;&gt; <em>hack</em>0r')
+      rescue
+        # jruby
+        expect(b['hits'][0]['name']).to eq('"&gt; hack0r')
+        expect(b['hits'][0]['author']).to eq('')
+        expect(b['hits'][0]['_highlightResult']['name']['value']).to eq('"&gt; <em>hack</em>0r')
+      end
     end
   end
 
@@ -796,6 +1156,11 @@ describe 'Book' do
     # should be removed from the index
     results = index.search('Public book')
     expect(results['hits'].size).to eq(0)
+  end
+
+  it "should use the per_environment option in the additional index as well" do
+    index = Book.index(safe_index_name('Book'))
+    expect(index.name).to eq("#{safe_index_name('Book')}_#{Rails.env}")
   end
 end
 
@@ -855,5 +1220,48 @@ describe 'Disabled' do
   it "should disable the indexing using a symbol" do
     DisabledSymbol.create :name => 'foo'
     expect(DisabledSymbol.search('').size).to eq(0)
+  end
+end
+
+describe 'NullableId' do
+  before(:all) do
+  end
+
+  it "should not delete a null objectID" do
+    NullableId.create!
+  end
+end
+
+unless OLD_RAILS
+  describe 'EnqueuedObject' do
+    it "should enqueue a job" do
+      expect {
+        EnqueuedObject.create! :name => 'test'
+      }.to raise_error("enqueued 1")
+    end
+
+    it "should not enqueue a job inside no index block" do
+      expect {
+        EnqueuedObject.without_auto_index do
+          EnqueuedObject.create! :name => 'test'
+        end
+      }.not_to raise_error
+    end
+  end
+
+  describe 'DisabledEnqueuedObject' do
+    it "should not try to enqueue a job" do
+      expect {
+        DisabledEnqueuedObject.create! :name => 'test'
+      }.not_to raise_error
+    end
+  end
+end
+
+describe 'Misconfigured Block' do
+  it "should force the algoliasearch block" do
+    expect {
+      MisconfiguredBlock.reindex
+    }.to raise_error(ArgumentError)
   end
 end

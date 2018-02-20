@@ -1,5 +1,115 @@
 CHANGELOG
 
+2017-12-04 1.20.4
+
+      * Remove Bundler and RubyGems requirements
+
+2017-11-02 1.20.2
+
+      * Upgrade algoliasearch gem to 1.17.0
+
+2017-08-04 1.20.1
+
+      * Make sure objectIDs are manipulated as strings
+
+2017-07-31 1.20.0
+
+      * Override the user-agent (#238)
+      * Fixed NPE while running mocked tests (#242)
+      * Add `paginationLimitedTo` setting (#243)
+      * Make `algolia_without_auto_index_scope` thread-safe (#234)
+
+2017-03-13 1.19.1
+
+      * Make sure get_model_classes is not ActiveRecord compliant only
+
+2017-03-13 1.19.0
+
+      * Rewrote the algoliasearch:reindex rake task to better detect models to reindex
+      * Fixed the handling of `raise_on_failture` for class methods
+
+2017-02-16 1.18.0
+
+      * Add new replica parameter, `inherit` (#198)
+
+2017-01-05 1.17.1
+
+      * Add missing `disablePrefixOnAttributes` and `disableTypoToleranceOnAttributes` attributes (#193)
+
+2017-01-05 1.17.0
+
+      * Do not enqueue indexing operations if the indexing is disabled
+      * Add `searchableAttributes` and `numericAttributesForFiltering` index settings
+      * Fixed here and there synchronous behaviors (mostly unit tests related)
+      * Rename `slave` to `replica`
+      * Upgraded `algoliasearch-client-{ruby,js}` deps
+
+2016-11-25 1.16.3
+
+      * Propagate `search_facet` to `search_for_facet_values` renaming (backward compatible)
+      * Upgrade `algoliasearch` dependency to ~> 1.12.1
+      * Add missing `typoTolerance` setting
+
+2016-11-14 1.16.2
+
+      * Add missing disableTypoToleranceOnAttributes and disableTypoToleranceOnWords index settings
+
+2016-11-04 1.16.1
+
+      * Added IndexSettings#get_attribute_names
+      * Refactored IndexSettings#get_attributes
+      * algolia_must_reindex? doesn't compute attribute values anymore
+
+2016-10-02 1.16.0
+
+      * Upgrade `algoliasearch` to 1.12.0
+      * Add `search_facet` method
+
+2016-10-02 1.15.1
+
+      * Missing `advancedSyntax` index setting forward
+
+2016-08-21 1.15.0
+
+      * Upgrade to AlgoliaSearch JS API client 3.18.0
+      * Upgrade to AlgoliaSearch Ruby API client 1.11.0
+      * Official support of Rails 5.x
+      * Reduce 404 logging if get_settings on a non-existing index
+      * Here and there fixes
+
+2015-08-19 1.14.1
+
+      * Upgrade to AlgoliaSearch JS API client 3.7.5
+
+2015-08-11 1.14.0
+
+      * Add numericAttributesToIndex index setting
+
+2015-08-07 1.13.4
+
+      * Do not consider the per_environment option while initializing the temporary index.
+
+2015-08-05 1.13.3
+
+      * The `active_job.rb` file was not included in the gem
+
+2015-08-01 1.13.2
+
+      * Lazy load the `ActiveJob` class to ensure the underlying queuing system is initialized when we actually use it.
+
+2015-07-20 1.13.1
+
+      * Use `after_commit` instead of `after_save` to ensure we index once in the DB
+
+2015-06-21 1.13.0
+
+      * Ability to use a background queue to handle all automatic indexing operations
+      * Fix a bug avoiding the gem to remove records when using the Sequel ORM
+
+2015-05-28 1.12.2
+
+      * Add a new `raise_on_failure` option, controlling whereas exceptions are raised while trying to reach Algolia's API.
+
 2015-05-12 1.12.1
 
       * Upgrade to algoliasearch-client-js 3.3.0
